@@ -5,6 +5,7 @@ import requests
 from bs4 import BeautifulSoup
 import numpy as np
 import pandas as pd
+import datetime
 import algosdk
 import math
 import time
@@ -18,52 +19,57 @@ from pdfminer.layout import LAParams
 
 class TestingData_Scraper() :
 
-    def __init__(self) :
+    def __init__(self,Impute=False) :
 
-        self.url = "https://covidtracking.com/data"
-        html = urlopen(self.url)
-        self.soup = BeautifulSoup(html, 'html.parser')
+        self.url_positive_cases = "https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_time_series/time_series_covid19_confirmed_US.csv"
+        self.url_deaths = "https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_time_series/time_series_covid19_deaths_US.csv"
 
-        self.state_urls = self.Scrape_StateURL()
+        self.Gen_Date_Columns()
 
-    def Scrape_StateURL(self) :
+    def Gen_Date_Columns(self) :
 
-        all_states = self.soup.findAll(class_='data-state css-jzj4fc')
-        all_states_list = [all_states[i].findAll('h3')[0].getText() for i in range(len(all_states))]
-        state_urls = np.zeros((len(all_states),2),dtype='O')
-        for i,state in enumerate(all_states) :
-            state_urls[i][0] = state.findAll('h3')[0].getText()
-            for a in state.findAll(class_="list-unstyled")[0].findAll('a') :
-                if 'historical' in a['href'] :
-                    state_urls[i][1] = self.url + a['href'][5:]
-                continue
-        return state_urls     
+        column_range = []
+        date_add =  datetime.datetime.strptime('1/22/20','%m/%d/%y')
+        while date_add < datetime.datetime.today() :
+            column_range.append(date_add)
+            date_add += datetime.timedelta(days=1)
+        column_range = [datetime.datetime.strftime(date,'%m/%d/%y') for date in column_range]
+        column_range = ['/'.join([a.lstrip('0') for a in date.split('/')]) for date in column_range]
+        
+        self.date_columns = column_range
 
-    def Scrape_Stats(self) :
+    def Impute_Values(self,df) :
 
-        count = 0
-        to_create = pd.DataFrame()
-        for state,url in self.state_urls :
-            html_state = urlopen(url)
-            soup_state = BeautifulSoup(html_state, 'html.parser')
-            historical_table = soup_state.findAll(class_='state-historical')[0]
-            if count == 0 : #pull column header if first occurrence
-                column_headers = [head.getText() for head in historical_table.findAll('thead')[0].findAll('th')]
-                ind_drop = column_headers.index('Screenshot') 
-                column_headers.pop(ind_drop)
-                self.column_headers = column_headers
-                count = 1
-            rows = list(historical_table.findAll('tbody')[0])
-            to_append = []
-            for row in rows :
-                to_append.append([item.getText() for item in row.findAll('td')])
-            to_append = np.delete(np.array(to_append),ind_drop,axis=1)
-            to_append = pd.DataFrame(to_append,columns=column_headers)
-            to_append['State'] = state
-            to_create = to_create.append(to_append)
+        for i,v in df.iterrows() :
+            cases_ck = v[self.date_columns].to_list()
+            for j,col in enumerate(cases_ck) :
+                if j == 0 :
+                    continue
+                to_add = col if col >= cases_ck[j-1] else cases_ck[j-1]
+                cases_ck[j] = to_add
+            df.loc[i,self.date_columns] = cases_ck
 
-        return to_create
+    def Get_Final_DF(self,Impute = False) :
 
+        cases = pd.read_csv(self.url_positive_cases)
+        deaths = pd.read_csv(self.url_deaths)
+
+        self.date_columns = [col for col in self.date_columns if col in cases.columns]
+
+        if Impute :
+            print('Imputing values where errors in cumulative stats.')
+            self.Impute_Values(cases)
+            self.Impute_Values(deaths)
+
+        id_vars = [col for col in cases.columns if col not in self.date_columns]
+        cases = cases.melt(id_vars=id_vars,var_name='Date',value_name='Positive')
+
+        id_vars = [col for col in deaths.columns if col not in self.date_columns]
+        deaths = deaths.melt(id_vars=id_vars,var_name='Date',value_name='Deaths')
+
+        Testing_DF = cases
+        Testing_DF['Deaths'] = deaths['Deaths']
+        return Testing_DF
 
 
 class Algorand_Scrape():
